@@ -21,6 +21,9 @@ import com.hazelcast.config.DiscoveryConfig;
 import com.hazelcast.config.DiscoveryStrategyConfig;
 import com.hazelcast.config.XmlConfigBuilder;
 import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.logging.ILogger;
+import com.hazelcast.spi.discovery.DiscoveryNode;
+import com.hazelcast.spi.discovery.DiscoveryStrategy;
 import com.hazelcast.test.HazelcastTestSupport;
 import com.netflix.appinfo.ApplicationInfoManager;
 import com.netflix.appinfo.EurekaInstanceConfig;
@@ -34,6 +37,8 @@ import com.netflix.discovery.shared.Applications;
 import com.netflix.discovery.shared.transport.EurekaHttpClient;
 import com.netflix.discovery.shared.transport.EurekaHttpResponse;
 import com.netflix.discovery.shared.transport.SimpleEurekaHttpServer;
+import com.netflix.discovery.shared.transport.jersey3.Jersey3TransportClientFactories;
+import jakarta.ws.rs.core.MediaType;
 import org.apache.commons.configuration.AbstractConfiguration;
 import org.junit.After;
 import org.junit.Before;
@@ -41,11 +46,13 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
+import org.springframework.cloud.netflix.eureka.http.WebClientTransportClientFactories;
+import org.springframework.web.reactive.function.client.WebClient;
 
-import jakarta.ws.rs.core.MediaType;
 import java.net.URI;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static com.netflix.discovery.shared.transport.EurekaHttpResponse.anEurekaHttpResponse;
 import static junit.framework.TestCase.assertNotNull;
@@ -301,6 +308,90 @@ public class HazelcastClientTestCase extends HazelcastTestSupport {
 
         assertClusterSizeEventually(2, hz1);
         assertClusterSizeEventually(2, hz2);
+    }
+
+    @Test
+    public void testInstanceRegistrationWithJersey3TransportClient() {
+        EurekaClient eurekaClient = mock(EurekaClient.class);
+        ApplicationInfoManager applicationInfoManager = mock(ApplicationInfoManager.class);
+        EurekaInstanceConfig eurekaInstanceConfig = mock(EurekaInstanceConfig.class);
+        ILogger mockLogger = mock(ILogger.class);
+        DiscoveryNode mockDiscoveryNode = mock(DiscoveryNode.class);
+
+        // Use the real Jersey3 transport client factories
+        Jersey3TransportClientFactories jersey3TransportFactories = new Jersey3TransportClientFactories();
+
+        when(eurekaClient.getApplicationInfoManager()).thenReturn(applicationInfoManager);
+        when(eurekaClient.getApplication(anyString())).thenReturn(new Application(APP_NAME));
+
+        InstanceInfo instanceInfo = InstanceInfo.Builder.newBuilder().setAppName(APP_NAME).build();
+        when(applicationInfoManager.getInfo()).thenReturn(instanceInfo);
+        when(applicationInfoManager.getEurekaInstanceConfig()).thenReturn(eurekaInstanceConfig);
+        when(eurekaInstanceConfig.getAppname()).thenReturn(APP_NAME);
+
+        // Set the Eureka client and Jersey3 transport factories
+        EurekaOneDiscoveryStrategyFactory.setEurekaClient(eurekaClient);
+        EurekaOneDiscoveryStrategyFactory.setGroupName("dev");
+        EurekaOneDiscoveryStrategyFactory.setTransportClientFactories(jersey3TransportFactories);
+
+        EurekaOneDiscoveryStrategyFactory factory = new EurekaOneDiscoveryStrategyFactory();
+        DiscoveryStrategy strategy = factory.newDiscoveryStrategy(mockDiscoveryNode, mockLogger, Collections.emptyMap());
+        assertNotNull("Discovery strategy should be created", strategy);
+
+        Config config = new XmlConfigBuilder().build();
+        HazelcastInstance hz1 = this.factory.newHazelcastInstance(config);
+        HazelcastInstance hz2 = this.factory.newHazelcastInstance(config);
+
+        assertClusterSizeEventually(2, hz1);
+        assertClusterSizeEventually(2, hz2);
+
+        verify(eurekaClient, times(3)).getApplicationInfoManager();
+        verify(eurekaClient, times(2)).getApplication(APP_NAME);
+        verify(applicationInfoManager, atLeastOnce()).setInstanceStatus(InstanceStatus.UP);
+    }
+
+    @Test
+    public void testInstanceRegistrationWithWebClientTransportClient() {
+        EurekaClient eurekaClient = mock(EurekaClient.class);
+        ApplicationInfoManager applicationInfoManager = mock(ApplicationInfoManager.class);
+        EurekaInstanceConfig eurekaInstanceConfig = mock(EurekaInstanceConfig.class);
+        ILogger mockLogger = mock(ILogger.class);
+        DiscoveryNode mockDiscoveryNode = mock(DiscoveryNode.class);
+
+        // Use the real Web Client transport client factories
+        Supplier<WebClient.Builder> webClientBuilderSupplier =
+                org.springframework.web.reactive.function.client.WebClient::builder;
+
+        WebClientTransportClientFactories webClientTransportFactories =
+                new WebClientTransportClientFactories(webClientBuilderSupplier);
+
+        when(eurekaClient.getApplicationInfoManager()).thenReturn(applicationInfoManager);
+        when(eurekaClient.getApplication(anyString())).thenReturn(new Application(APP_NAME));
+
+        InstanceInfo instanceInfo = InstanceInfo.Builder.newBuilder().setAppName(APP_NAME).build();
+        when(applicationInfoManager.getInfo()).thenReturn(instanceInfo);
+        when(applicationInfoManager.getEurekaInstanceConfig()).thenReturn(eurekaInstanceConfig);
+        when(eurekaInstanceConfig.getAppname()).thenReturn(APP_NAME);
+
+        // Set the Eureka client and transport factories
+        EurekaOneDiscoveryStrategyFactory.setEurekaClient(eurekaClient);
+        EurekaOneDiscoveryStrategyFactory.setGroupName("dev");
+        EurekaOneDiscoveryStrategyFactory.setTransportClientFactories(webClientTransportFactories);
+
+        EurekaOneDiscoveryStrategyFactory factory = new EurekaOneDiscoveryStrategyFactory();
+        DiscoveryStrategy strategy = factory.newDiscoveryStrategy(mockDiscoveryNode, mockLogger, Collections.emptyMap());
+        assertNotNull("Discovery strategy should be created", strategy);
+
+        Config config = new XmlConfigBuilder().build();
+        HazelcastInstance hz1 = this.factory.newHazelcastInstance(config);
+        HazelcastInstance hz2 = this.factory.newHazelcastInstance(config);
+
+        assertClusterSizeEventually(2, hz1);
+        assertClusterSizeEventually(2, hz2);
+
+        verify(eurekaClient, times(3)).getApplicationInfoManager();
+        verify(eurekaClient, times(2)).getApplication(APP_NAME);
+        verify(applicationInfoManager, atLeastOnce()).setInstanceStatus(InstanceStatus.UP);
     }
 
     private EurekaHttpResponse<Applications> generateMockResponse(List<InstanceInfo> infoList) {
